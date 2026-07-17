@@ -1,9 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput } from 'react-native';
 import { Calendar, LocaleConfig } from 'react-native-calendars';
 import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { GestureHandlerRootView, Swipeable } from 'react-native-gesture-handler';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// Chave usada para salvar os eventos no AsyncStorage, essa chave funciona como um identificador.
+const CHAVE_EVENTOS = '@CuidaMais:calendarioEventos';
 
 // Configurando o calendário para Português
 LocaleConfig.locales['pt-br'] = {
@@ -15,26 +19,63 @@ LocaleConfig.locales['pt-br'] = {
 };
 LocaleConfig.defaultLocale = 'pt-br';
 
+// Eventos iniciais, usados apenas se ainda não houver nada salvo
+const EVENTOS_INICIAIS = [
+  { id: 1, titulo: 'Consulta pré-natal', dataCompleta: '2026-06-11', hora: '10:00', tipo: 'consulta', status: 'pendente' },
+  { id: 2, titulo: 'Vacina dTpa',      dataCompleta: '2026-06-24', hora: '14:30', tipo: 'vacina',   status: 'pendente' },
+];
+
+// Função que representa a tela do calendario, retorna toda interface dessa tela
+// Aqui useState organiza os estados dos eventos. OBS::: MESMO USANDO USESTATE PARA ORGANIZAR AS TELAS E OS EVENTOS, O REACT IDENTIFICA QUE CADA COMPONENTE TEM SEUS ESTADOS SEPARADOS E MANTEM ELES ASSIM. ENTÃO RELAXA QUE NÃO VAI DAR ERRO!! 🫶🫶
 export default function Calendario() {
-  const [mesAnoAtual, setMesAnoAtual] = useState('Junho 2026');
-  const [eventos, setEventos] = useState([
-    { id: 1, titulo: 'Consulta pré-natal', dataCompleta: '2026-06-11', hora: '10:00', tipo: 'consulta', status: 'pendente' },
-    { id: 2, titulo: 'Vacina dTpa',      dataCompleta: '2026-06-24', hora: '14:30', tipo: 'vacina',   status: 'pendente' },
-  ]);
+  const [mesAnoAtual, setMesAnoAtual] = useState('Junho 2026');    
+  const [eventos, setEventos] = useState([]);
+  const [carregando, setCarregando] = useState(true); // Controla se os dados ainda estão sendo carregados ou não.
   const [modalVisivel, setModalVisivel] = useState(false);
   const [diaSelecionado, setDiaSelecionado] = useState(null);
   const [novoTitulo, setNovoTitulo] = useState('');
   const [novaHora, setNovaHora] = useState('');
   const [novoTipo, setNovoTipo] = useState('consulta');
 
-  const atualizarStatusEvento = (id, novoStatus) => { 
-    setEventos(eventosAtuais =>
-      eventosAtuais.map(evento =>
-        evento.id === id ? { ...evento, status: novoStatus } : evento
-      )
-    );
+  // Carrega os eventos salvos assim que a tela abre
+  useEffect(() => {
+    const carregarEventos = async () => {
+      try {
+        const eventosSalvos = await AsyncStorage.getItem(CHAVE_EVENTOS);
+        if (eventosSalvos) {
+          setEventos(JSON.parse(eventosSalvos));
+        } else {
+          setEventos(EVENTOS_INICIAIS);
+          await AsyncStorage.setItem(CHAVE_EVENTOS, JSON.stringify(EVENTOS_INICIAIS));
+        }
+      } catch (erro) {
+        console.log('Erro ao carregar eventos:', erro);
+        setEventos(EVENTOS_INICIAIS);
+      } finally {
+        setCarregando(false);
+      }
+    };
+    carregarEventos();
+  }, []);
+
+  // Salva os eventos no AsyncStorage sempre que eles mudam
+  const salvarEventos = async (novosEventos) => {
+    setEventos(novosEventos);
+    try {
+      await AsyncStorage.setItem(CHAVE_EVENTOS, JSON.stringify(novosEventos));
+    } catch (erro) {
+      console.log('Erro ao salvar eventos:', erro);
+    }
   };
 
+  const atualizarStatusEvento = (id, novoStatus) => {
+    const eventosAtualizados = eventos.map(evento =>
+      evento.id === id ? { ...evento, status: novoStatus } : evento
+    );
+    salvarEventos(eventosAtualizados);
+  };
+
+// Aqui o Modal serve para quando a usuária clicar em uma data do calendario para cadastrar um novo evento 
   const abrirModalNovoEvento = (dia) => {
     setDiaSelecionado(dia.dateString);
     setNovoTitulo('');
@@ -47,16 +88,16 @@ export default function Calendario() {
     if (!novoTitulo.trim() || !diaSelecionado) {
       return;
     }
-    const novoEvento = {
-      id: Date.now(),
+    const novoEvento = { // Aqui criei um objeto para reunir todas as infomações necessárias sobre o eventoantes de salvar.
+      id: Date.now(), // Aqui, evito que dois eventos tenham o mesmo ID
       titulo: novoTitulo.trim(),
       dataCompleta: diaSelecionado,
       hora: novaHora.trim() || '--:--',
       tipo: novoTipo,
       status: 'pendente'
     };
-    setEventos(eventosAtuais => [...eventosAtuais, novoEvento]);
-    setModalVisivel(false); // Permite o úsuario transitar em uma janela e outra 
+    salvarEventos([...eventos, novoEvento]);
+    setModalVisivel(false);
   };
 
   const renderAcoesEsquerda = (id) => (
@@ -65,10 +106,10 @@ export default function Calendario() {
       onPress={() => atualizarStatusEvento(id, 'concluido')}
     >
       <Text style={styles.acaoTexto}>Concluído</Text>
-    </TouchableOpacity>
+    </TouchableOpacity> // Detalhe curioso que pode confundir, TouchableOpacity não é um botão, ele torna uma área clicável.
   );
 
-  const renderAcoesDireita = (id) => (
+  const renderAcoesDireita = (id) => ( 
     <TouchableOpacity
       style={[styles.acaoSwipe, styles.acaoNaoConcluido]}
       onPress={() => atualizarStatusEvento(id, 'nao_concluido')}
@@ -78,10 +119,11 @@ export default function Calendario() {
   );
 
   // Separar responsabilidades
+  // Prepara as informações que o calendário precisa, analisa os eventos já cadastrados e gera os indicadores de cada data.
   const gerarMarcacoes = () => {
     const markers = {};
     
-    eventos.forEach(evento => {
+    eventos.forEach(evento => { // Percorre cada evento 
       if (evento.tipo === 'consulta') {
         markers[evento.dataCompleta] = {
           marked: true,
@@ -104,8 +146,8 @@ export default function Calendario() {
     return markers;
   };
 
-  const formatarDataAmigavel = (dataString) => {
-    try {
+  const formatarDataAmigavel = (dataString) => { // Converte a data para um formato amigável ao usuário, 
+    try { // Me ajuda a garantir que se acontecer algum erro, a aplicação continue funcionando retornando a data original
       const dataObjeto = parseISO(dataString);
       return format(dataObjeto, "dd 'de' MMM", { locale: ptBR });
     } catch (e) {
@@ -113,9 +155,18 @@ export default function Calendario() {
     }
   };
 
+  if (carregando) {
+    return (
+      <View style={styles.carregandoContainer}>
+        <Text style={styles.carregandoTexto}>Carregando calendário...</Text>
+      </View>
+    );
+  }
+
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-    <ScrollView contentContainerStyle={styles.container}>
+    // Garante que os gestos funcionem corretamente: obs.: "GestureHandlerRootView" é o container obrigatório quando usamos a biblioteca react-native-gesture-handler 🤭
+    <GestureHandlerRootView style={{ flex: 1 }}> 
+    <ScrollView contentContainerStyle={styles.container}> // Esse camarada aqui permite que o conteúdo seja deslizado verticalmente. Ótimo para telas com muita informação 😏
       <View style={styles.header}>
         <Text style={styles.greeting}>Seu acompanhamento 📅</Text>
         <Text style={styles.title}>Meu Calendário</Text>
@@ -170,13 +221,13 @@ export default function Calendario() {
 
         {/* PRÓXIMOS EVENTOS */}
         <Text style={styles.sectionLabel}>PRÓXIMOS EVENTOS</Text>
-        {eventos.map(evento => (
+        {eventos.map(evento => ( // Lista de eventos com Swipeable para ações: Esse colega nos permite arrastar para os lados e mostrar ações.
           <Swipeable
-            key={evento.id}
+            key={evento.id} 
             renderLeftActions={() => renderAcoesEsquerda(evento.id)}
             renderRightActions={() => renderAcoesDireita(evento.id)}
           >
-          <View style={[
+          <View style={[ // Estilos condicionais para os cartões mudarem conforme o estado "concluído ou não concluído."
             styles.eventoCard,
             evento.status === 'concluido' && styles.eventoCardConcluido,
             evento.status === 'nao_concluido' && styles.eventoCardNaoConcluido
@@ -242,6 +293,16 @@ export default function Calendario() {
 }
 
 const styles = StyleSheet.create({
+  carregandoContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#fff8fb', 
+  },
+  carregandoTexto: {
+    color: '#aa7078', 
+    fontSize: 14,
+  },
   container: { 
     flexGrow: 1, 
     backgroundColor: '#fff8fb' 
